@@ -1,0 +1,105 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      # Keep CORS at the gateway so browsers only need to trust one public origin.
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            # Tighten this list before a public deployment.
+            allowed-origin-patterns:
+              - "*"
+            allowed-methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+            allowed-headers:
+              - "*"
+            allow-credentials: false
+      default-filters:
+        # Helpful once CORS is enabled and multiple layers can emit the same header.
+        - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials
+      routes:
+        # External /api/auth/** becomes the auth-service's existing /auth/** mapping.
+        - id: auth-service
+          uri: http://auth-service:4000
+          predicates:
+            - Path=/api/auth,/api/auth/**
+          filters:
+            - RewritePath=/api/auth/?(?<segment>.*), /auth/$\{segment}
+
+        # customer-service currently exposes /patients/**, so the gateway translates the public path.
+        - id: customer-service
+          uri: http://customer-service:8081
+          predicates:
+            - Path=/api/customers,/api/customers/**
+          filters:
+            - RewritePath=/api/customers/?(?<segment>.*), /patients/$\{segment}
+
+        # Expose the same resource name publicly and internally to keep the API easy to reason about.
+        - id: inventory-service
+          uri: http://inventory-service:8082
+          predicates:
+            - Path=/api/food-items,/api/food-items/
+          filters:
+            - SetPath=/api/food-items
+
+        - id: inventory-service-items
+          uri: http://inventory-service:8082
+          predicates:
+            - Path=/api/food-items/**
+          filters:
+            - RewritePath=/api/food-items/?(?<segment>.*), /api/food-items/$\{segment}
+
+        # These services already use the desired public prefix, so no rewrite is needed.
+        - id: order-service
+          uri: http://order-service:8083
+          predicates:
+            - Path=/api/orders,/api/orders/**
+
+        - id: payment-service
+          uri: http://payment-service:8084
+          predicates:
+            - Path=/api/payments,/api/payments/**
+
+        - id: notification-service
+          uri: http://notification-service:8085
+          predicates:
+            - Path=/api/notifications,/api/notifications/**
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway
+  endpoint:
+    gateway:
+      enabled: true
+
+logging:
+  level:
+    com.vm.apigateway: INFO
+    org.springframework.cloud.gateway: INFO
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html
+    url: /openapi.yml
+
+app:
+  jwt:
+    # The gateway validates tokens locally using the same signing secret as auth-service.
+    secret: ${APP_JWT_SECRET:change-this-demo-secret-key-to-at-least-32-bytes-long}
+
+# Future extension points:
+# - JWT verification can be added with a custom GatewayFilter in com.vm.apigateway.filter
+# - rate limiting can be added with Spring Cloud Gateway RequestRateLimiter filters per route

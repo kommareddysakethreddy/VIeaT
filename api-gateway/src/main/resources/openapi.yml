@@ -1,0 +1,326 @@
+openapi: 3.0.1
+info:
+  title: VIeaT Gateway API
+  version: 1.0.0
+  description: |
+    Public API documentation for the VIeaT system. All client traffic should go
+    through the API Gateway on port 8080.
+servers:
+  - url: http://localhost:8080
+    description: Local Docker Compose gateway
+tags:
+  - name: Auth
+  - name: Customers
+  - name: Inventory
+  - name: Orders
+  - name: Payments
+  - name: Notifications
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: customer@example.com
+        password:
+          type: string
+          example: Password@123
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        userId:
+          type: string
+          format: uuid
+        email:
+          type: string
+        role:
+          type: string
+          enum: [ADMIN, CUSTOMER]
+        customerId:
+          type: integer
+          format: int64
+          nullable: true
+    CustomerRequest:
+      type: object
+      required: [name, email, address, dateOfBirth, registeredDate]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        address:
+          type: string
+        dateOfBirth:
+          type: string
+          example: 1995-04-10
+        registeredDate:
+          type: string
+          example: 2026-03-31
+    OrderItemRequest:
+      type: object
+      required: [foodItemId, foodItemName, quantity, price]
+      properties:
+        foodItemId:
+          type: integer
+          format: int64
+        foodItemName:
+          type: string
+        quantity:
+          type: integer
+          format: int32
+        price:
+          type: number
+          format: double
+    OrderRequest:
+      type: object
+      required: [customerName, deliveryAddress, items]
+      properties:
+        customerId:
+          type: integer
+          format: int64
+          nullable: true
+          description: Optional for CUSTOMER users. The gateway-backed identity is used automatically.
+        customerName:
+          type: string
+        deliveryAddress:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItemRequest'
+    ErrorResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+        status:
+          type: integer
+        error:
+          type: string
+        message:
+          type: string
+        path:
+          type: string
+security:
+  - bearerAuth: []
+paths:
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Register a new customer account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: JWT created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Log in and get a JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current authenticated user
+      responses:
+        '200':
+          description: Current user details
+  /api/customers:
+    get:
+      tags: [Customers]
+      summary: List all customers
+      description: ADMIN only
+      responses:
+        '200':
+          description: Customer list
+        '403':
+          description: Forbidden
+    post:
+      tags: [Customers]
+      summary: Create a customer profile
+      description: CUSTOMER can create only a profile matching their own authenticated email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerRequest'
+      responses:
+        '200':
+          description: Customer profile created
+  /api/customers/me:
+    get:
+      tags: [Customers]
+      summary: Get the authenticated customer's profile
+      responses:
+        '200':
+          description: Customer profile
+    put:
+      tags: [Customers]
+      summary: Update the authenticated customer's profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerRequest'
+      responses:
+        '200':
+          description: Customer profile updated
+  /api/food-items:
+    get:
+      tags: [Inventory]
+      summary: List food items
+      responses:
+        '200':
+          description: Food items returned
+  /api/food-items/{id}:
+    get:
+      tags: [Inventory]
+      summary: Get a food item by id
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Food item returned
+  /api/orders:
+    get:
+      tags: [Orders]
+      summary: List orders visible to the authenticated user
+      responses:
+        '200':
+          description: Orders returned
+    post:
+      tags: [Orders]
+      summary: Create an order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderRequest'
+      responses:
+        '201':
+          description: Order created
+        '401':
+          description: Missing or invalid token
+        '403':
+          description: Forbidden
+  /api/orders/{id}:
+    get:
+      tags: [Orders]
+      summary: Get one order
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Order returned
+        '403':
+          description: Not allowed to view another user's order
+  /api/orders/{id}/status:
+    patch:
+      tags: [Orders]
+      summary: Update order status
+      description: ADMIN only
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - in: query
+          name: value
+          required: true
+          schema:
+            type: string
+            example: DELIVERED
+      responses:
+        '200':
+          description: Order status updated
+        '403':
+          description: Forbidden
+  /api/payments/order/{orderId}:
+    get:
+      tags: [Payments]
+      summary: Get payment for an order
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Payment returned
+        '403':
+          description: Not allowed to view another user's payment
+  /api/notifications/order/{orderId}:
+    get:
+      tags: [Notifications]
+      summary: Get notification for an order
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Notification returned
+        '403':
+          description: Not allowed to view another user's notification

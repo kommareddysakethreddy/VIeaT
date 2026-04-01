@@ -1,0 +1,3 @@
+CREATE SEQUENCE IF NOT EXISTS auth_customer_number_seq
+    START WITH 1000
+    INCREMENT BY 1;

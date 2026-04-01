@@ -1,0 +1,232 @@
+# Beginner-friendly Docker Compose setup for the microservices, PostgreSQL, and Kafka.
+# We use one PostgreSQL container because it is simpler to manage than separate
+# database containers, while still keeping one database per microservice.
+
+services:
+  # Shared PostgreSQL server.
+  # The init SQL script creates the databases for all services the first time
+  # this container starts with an empty data volume.
+  postgres:
+    image: postgres:16-alpine
+    container_name: vieat-postgres
+    expose:
+      # Keep PostgreSQL private to the Docker network; inspect it with docker exec when needed.
+      - "5432"
+    environment:
+      POSTGRES_USER: food_user
+      POSTGRES_PASSWORD: food_password
+      POSTGRES_DB: postgres
+    volumes:
+      # This volume keeps PostgreSQL data even after the container stops.
+      - postgres-data:/var/lib/postgresql/data
+      # Docker automatically runs scripts in this folder on first startup.
+      - ./docker/postgres/init/01-create-microservice-databases.sql:/docker-entrypoint-initdb.d/01-create-microservice-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U food_user -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - food-ordering-network
+
+  # Single-node Kafka in KRaft mode keeps the event setup simple and avoids ZooKeeper.
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: vieat-kafka
+    expose:
+      # Containers talk to Kafka over the internal Docker network.
+      - "9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - food-ordering-network
+
+  customer-service:
+    build:
+      context: ./customer-service
+      dockerfile: Dockerfile
+    container_name: customer-service
+    expose:
+      - "8081"
+    environment:
+      # Inside Docker, localhost means "this same container".
+      # The database lives in the postgres container, so the hostname must be postgres.
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: customerdb
+      DB_USERNAME: food_user
+      DB_PASSWORD: food_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - food-ordering-network
+
+  inventory-service:
+    build:
+      context: ./inventory-service
+      dockerfile: Dockerfile
+    container_name: inventory-service
+    expose:
+      # HTTP stays private behind the gateway and gRPC stays private for order-service.
+      - "8082"
+      - "9091"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: inventorydb
+      DB_USERNAME: food_user
+      DB_PASSWORD: food_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - food-ordering-network
+
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: auth-service
+    expose:
+      - "4000"
+    environment:
+      # auth-service uses its own authdb database inside the shared PostgreSQL server.
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: authdb
+      DB_USERNAME: food_user
+      DB_PASSWORD: food_password
+      # Keep the JWT secret explicit in Docker so the token signing key is stable.
+      APP_JWT_SECRET: change-this-demo-secret-key-to-at-least-32-bytes-long
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - food-ordering-network
+
+  payment-service:
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    container_name: payment-service
+    expose:
+      - "8084"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: paymentdb
+      DB_USERNAME: food_user
+      DB_PASSWORD: food_password
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ORDER_PLACED_TOPIC: order-placed
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - food-ordering-network
+
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    container_name: notification-service
+    expose:
+      - "8085"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: notificationdb
+      DB_USERNAME: food_user
+      DB_PASSWORD: food_password
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ORDER_PLACED_TOPIC: order-placed
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - food-ordering-network
+
+  order-service:
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile
+    container_name: order-service
+    expose:
+      - "8083"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: orderdb
+      DB_USERNAME: food_user
+      DB_PASSWORD: food_password
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ORDER_PLACED_TOPIC: order-placed
+      # Order service reaches inventory-service over the Docker network.
+      INVENTORY_GRPC_ADDRESS: static://inventory-service:9091
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      inventory-service:
+        condition: service_started
+    networks:
+      - food-ordering-network
+
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    ports:
+      # The gateway is the only public HTTP entry point for clients.
+      - "8080:8080"
+    environment:
+      # Gateway must share the same JWT secret so it can validate auth-service tokens locally.
+      APP_JWT_SECRET: change-this-demo-secret-key-to-at-least-32-bytes-long
+    depends_on:
+      auth-service:
+        condition: service_started
+      customer-service:
+        condition: service_started
+      inventory-service:
+        condition: service_started
+      order-service:
+        condition: service_started
+      payment-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+    networks:
+      - food-ordering-network
+
+# All containers join the same bridge network so they can reach each other by service name.
+networks:
+  food-ordering-network:
+    driver: bridge
+
+volumes:
+  # Named volume for persistent PostgreSQL storage.
+  postgres-data:
