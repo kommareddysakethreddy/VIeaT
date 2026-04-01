@@ -65,7 +65,7 @@ The system follows a **gateway-routed microservices architecture** with independ
 - **Payment and Notification services consume events** instead of being tightly coupled
 - **Communication between Inventory service done via gRPC** from Order Service
 
-![VIeaT Architecture](docs/architecture.png)
+![VIeaT Architecture](docs/Architecture.png)
 
 ### Authentication Flow
 1. Client sends login request through API Gateway
